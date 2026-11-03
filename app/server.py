@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 server.py  -  multithreaded TCP application server (runs on h4, h5, h6)
-
+ 
 - Listens on a TCP port (default 8000), one thread per client connection.
 - Each connection may carry several requests, one per line.
 - Simulates work: a limited number of "worker slots" (--capacity) and a work
@@ -11,23 +11,23 @@ server.py  -  multithreaded TCP application server (runs on h4, h5, h6)
   it to the SDN controller every --report-interval seconds over UDP. The
   report also works as a heartbeat: if it stops, the controller marks this
   server DEAD.
-
+ 
 Message protocol (text, one message per line):
     request : REQUEST|<client>|task_size=<n>
     reply   : RESPONSE|server=<name>|status=OK
               RESPONSE|server=<name>|status=ERROR     (malformed request)
-
+ 
 Load report (UDP datagram, JSON):
     {"server": "h4", "active_conns": 5, "avg_resp_ms": 40.0}
-
+ 
 Slowing a server at run time (for experiments):
     echo 150 > /tmp/lb_slow_h4      # adds 150 ms to every request on h4
     rm /tmp/lb_slow_h4              # back to normal
-
+ 
 Example:
     python3 app/server.py --name h4
 """
-
+ 
 import argparse
 import json
 import socket
@@ -35,43 +35,53 @@ import sys
 import threading
 import time
 from collections import deque
-
+ 
 SLOW_FILE = "/tmp/lb_slow_{}"
-
-
+ 
+ 
+# Only responses from the last few seconds count towards avg_resp_ms. Without
+# this, a server that was slow and is then avoided by the controller keeps
+# reporting its old slow average forever (it gets no new requests to correct
+# it), so it stays penalised even after it has recovered.
+AVG_WINDOW_S = 5.0
+ 
+ 
 class Stats:
     """Thread-safe load counters."""
-
-    def __init__(self, window=20):
+ 
+    def __init__(self, window=20, max_age=AVG_WINDOW_S):
         self.lock = threading.Lock()
         self.active = 0
         self.served = 0
         self.errors = 0
-        self.times = deque(maxlen=window)     # recent response times (ms)
-
+        self.max_age = max_age
+        self.times = deque(maxlen=window)     # (timestamp, ms) of recent replies
+ 
     def conn_open(self):
         with self.lock:
             self.active += 1
-
+ 
     def conn_close(self):
         with self.lock:
             self.active -= 1
-
+ 
     def record(self, ms):
         with self.lock:
             self.served += 1
-            self.times.append(ms)
-
+            self.times.append((time.time(), ms))
+ 
     def error(self):
         with self.lock:
             self.errors += 1
-
+ 
     def snapshot(self):
         with self.lock:
-            avg = sum(self.times) / len(self.times) if self.times else 0.0
+            cutoff = time.time() - self.max_age
+            recent = [ms for ts, ms in self.times if ts >= cutoff]
+            avg = sum(recent) / len(recent) if recent else 0.0
             return self.active, avg, self.served, self.errors
-
-
+ 
+ 
 def extra_delay_ms(name, static_ms):
     """Static --slow-ms plus whatever is in the run-time slow file."""
     extra = float(static_ms)
@@ -81,8 +91,8 @@ def extra_delay_ms(name, static_ms):
     except (OSError, ValueError):
         pass
     return extra
-
-
+ 
+ 
 def parse_request(line):
     """Return (client, task_size) or None if the request is malformed."""
     parts = line.strip().split("|")
@@ -96,8 +106,8 @@ def parse_request(line):
             except ValueError:
                 return None
     return parts[1], task
-
-
+ 
+ 
 def handle_client(conn, addr, args, stats, capacity):
     """Serve one client connection until it closes, errors or goes idle."""
     conn.settimeout(args.idle_timeout)
@@ -132,8 +142,8 @@ def handle_client(conn, addr, args, stats, capacity):
             conn.close()
         except OSError:
             pass
-
-
+ 
+ 
 def reporter(args, stats, stop):
     """Send a load report to the controller every --report-interval s."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -150,8 +160,8 @@ def reporter(args, stats, stop):
             print("[%s] active=%d avg_resp=%.1fms served=%d errors=%d"
                   % (args.name, active, avg, served, errors), flush=True)
         stop.wait(args.report_interval)
-
-
+ 
+ 
 def main():
     ap = argparse.ArgumentParser(description="Threaded TCP application server")
     ap.add_argument("--name", required=True, help="server name, e.g. h4")
@@ -160,7 +170,7 @@ def main():
     ap.add_argument("--report-ip", default="10.0.0.254",
                     help="controller address for load reports")
     ap.add_argument("--report-port", type=int, default=9000)
-    ap.add_argument("--report-interval", type=float, default=2.0)
+    ap.add_argument("--report-interval", type=float, default=1.0)
     ap.add_argument("--capacity", type=int, default=4,
                     help="requests processed in parallel (worker slots)")
     ap.add_argument("--unit-ms", type=float, default=10.0,
@@ -171,11 +181,11 @@ def main():
                     help="close connections idle for this long")
     ap.add_argument("--quiet", action="store_true", help="no periodic output")
     args = ap.parse_args()
-
+ 
     stats = Stats()
     capacity = threading.Semaphore(args.capacity)
     stop = threading.Event()
-
+ 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((args.bind, args.port))
@@ -183,10 +193,10 @@ def main():
     print("[%s] listening on %s:%d (capacity=%d, reports -> %s:%d)"
           % (args.name, args.bind, args.port, args.capacity,
              args.report_ip, args.report_port), flush=True)
-
+ 
     threading.Thread(target=reporter, args=(args, stats, stop),
                      daemon=True).start()
-
+ 
     try:
         while True:
             conn, addr = srv.accept()
@@ -198,7 +208,8 @@ def main():
     finally:
         stop.set()
         srv.close()
-
-
+ 
+ 
 if __name__ == "__main__":
     sys.exit(main())
+ 
