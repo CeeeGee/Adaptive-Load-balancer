@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.log
+*.pcap
+ryu-env/
+results/raw/
+results/decisions_adaptive.csv
+results/events_adaptive.csv
