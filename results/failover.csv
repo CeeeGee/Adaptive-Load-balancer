@@ -1,0 +1,4 @@
+run,server,failure_detected_after_s,readmitted_after_restart_s
+1,h5,3.01,0.11
+2,h5,3.05,0.08
+3,h5,2.12,0.11
