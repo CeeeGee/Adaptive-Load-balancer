@@ -376,31 +376,37 @@ class LBCLI(CLI):
         print(run_client(self.mn, "h1", "--requests 12"))
 
     def _m_heavy(self):
-        # fixed preset so round robin and adaptive get exactly the same load
-        host, conc, dur, task = "h1", 12, 15, 3
-        cmd = ["python3", "-u", CLIENT_PY, "--name", host,
-               "--concurrency", str(conc), "--duration", str(dur),
-               "--task-size", str(task), "--timeout", "3", "--quiet"]
-        note("%s: python3 app/client.py --concurrency %d --duration %d "
-             "--task-size %d" % (host, conc, dur, task))
-        proc = self.mn.get(host).popen(cmd)
+        # fixed preset so round robin and adaptive get exactly the same load:
+        # 12 workers in total, 4 on each client, all three clients at once
+        hosts, conc, dur, task = CLIENTS, 4, 15, 3
+        note("h1, h2, h3 at the same time: python3 app/client.py "
+             "--concurrency %d --duration %d --task-size %d" % (conc, dur, task))
+        procs = []
+        for host in hosts:
+            cmd = ["python3", "-u", CLIENT_PY, "--name", host,
+                   "--concurrency", str(conc), "--duration", str(dur),
+                   "--task-size", str(task), "--timeout", "3", "--quiet"]
+            procs.append((host, self.mn.get(host).popen(cmd)))
         start = time.time()
         try:
-            while proc.poll() is None:
+            while any(p.poll() is None for _h, p in procs):
                 elapsed = time.time() - start
-                print("\r  running load  %2.0fs / %ds " % (elapsed, dur),
-                      end="", flush=True)
+                print("\r  running load from %s  %2.0fs / %ds "
+                      % (", ".join(hosts), elapsed, dur), end="", flush=True)
                 if elapsed > dur + 30:
-                    proc.kill()
+                    for _h, p in procs:
+                        p.kill()
                     break
                 time.sleep(0.5)
         except KeyboardInterrupt:
-            proc.kill()
+            for _h, p in procs:
+                p.kill()
             raise
         finally:
-            print("\r" + " " * 50 + "\r", end="")
-        out, _err = proc.communicate()
-        print(out.decode("utf-8", errors="replace"))
+            print("\r" + " " * 60 + "\r", end="")
+        for _h, p in procs:
+            out, _err = p.communicate()
+            print(out.decode("utf-8", errors="replace"))
 
     def _m_slow(self):
         name = ask_choice("server to slow down", SERVERS, "h4")
